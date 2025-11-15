@@ -1,3 +1,5 @@
+<img width="916" height="855" alt="image" src="https://github.com/user-attachments/assets/2710531e-156c-436e-9a0d-1d7e9549c78d" />
+
 🌟 TrendPulse AI — Emerging Technology Trend Forecasting System
 
 Google Trends + Time Series Forecasting + Sentiment Analysis + Power BI Dashboard
@@ -29,3 +31,4 @@ Blockchain
 5G Technology
 
 This is a real-world analytics + ML project suitable for presentations, resumes, and academic submissions.
+
