@@ -1,0 +1,4 @@
+Fastest growing technology: Generative AI with forecast growth 202.638%
+Most stable technology: 5G (Volatility 11.559)
+Strongest trend momentum: Generative AI (Trend Strength 16.46)
+Overall: Generative AI shows highest predicted growth; 5G is steady; Edge & Quantum show healthy rise; Blockchain is moderate.

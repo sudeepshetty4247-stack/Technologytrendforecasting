@@ -1,0 +1,125 @@
+# make_final_forecast_table_all.py
+# Runs ARIMA per technology and builds a final forecast table for Power BI.
+# Save this file as code/make_final_forecast_table_all.py
+
+import pandas as pd
+from pathlib import Path
+import numpy as np
+import warnings
+
+warnings.filterwarnings("ignore")
+
+try:
+    import pmdarima as pm
+except Exception as e:
+    raise ImportError("pmdarima required. Run: pip install pmdarima") from e
+
+# Config
+DATA_PATH = Path('data/trends_processed.csv')   # source cleaned data with Technology, Date, Interest
+OUTPUT_DIR = Path('outputs')
+FORECAST_PERIODS = 30    # days ahead to predict (change if you want weeks)
+HOLDOUT_DAYS = 14
+
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Load master data
+df = pd.read_csv(DATA_PATH)
+# normalize column names
+df.columns = [c.strip() for c in df.columns]
+
+# required columns check
+for col in ['Date', 'Technology', 'Interest']:
+    if col not in df.columns:
+        raise ValueError(f"Input file must have column: {col}")
+
+# parse date
+df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+df = df.dropna(subset=['Date']).sort_values(['Technology','Date'])
+
+final_rows = []
+
+techs = df['Technology'].unique().tolist()
+print(f"Found technologies: {techs}")
+
+for tech in techs:
+    print(f"\n--- Processing: {tech} ---")
+    tdf = df[df['Technology'] == tech].copy()
+    tdf = tdf.sort_values('Date').drop_duplicates('Date').reset_index(drop=True)
+    tdf = tdf[['Date','Interest']].rename(columns={'Date':'ds','Interest':'y'})
+
+    # Ensure daily index (fill missing dates)
+    full_idx = pd.date_range(start=tdf['ds'].min(), end=tdf['ds'].max(), freq='D')
+    tdf = tdf.set_index('ds').reindex(full_idx).rename_axis('ds').reset_index()
+    tdf['y'] = tdf['y'].ffill().fillna(0)
+
+    # Create holdout if enough data
+    if len(tdf) > HOLDOUT_DAYS:
+        train = tdf.iloc[:-HOLDOUT_DAYS]
+        holdout = tdf.iloc[-HOLDOUT_DAYS:]
+    else:
+        train = tdf
+        holdout = None
+
+    # Train auto_arima
+    try:
+        model = pm.auto_arima(train['y'], seasonal=False, error_action='ignore', suppress_warnings=True, stepwise=True, max_p=5, max_q=5)
+    except Exception as e:
+        print(f"ARIMA failed for {tech}: {e}")
+        continue
+
+    # Forecast
+    fc, conf = model.predict(n_periods=FORECAST_PERIODS, return_conf_int=True)
+    last_date = train['ds'].max()
+    future_idx = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=FORECAST_PERIODS, freq='D')
+    fc_df = pd.DataFrame({'ds': future_idx, 'y_pred': fc, 'y_lower': conf[:,0], 'y_upper': conf[:,1]})
+    # save per-tech forecast
+    safe_name = "".join(x if x.isalnum() else "_" for x in tech)[:40]
+    per_path = OUTPUT_DIR / f"{safe_name}_arima_forecast.csv"
+    fc_df.to_csv(per_path, index=False)
+    print(f"Saved forecast for {tech} -> {per_path}")
+
+    # Evaluate on holdout if exists (simple RMSE)
+    rmse = None
+    if holdout is not None:
+        # produce in-sample forecast for holdout length
+        try:
+            insamp = model.predict(n_periods=len(holdout))
+            rmse = float(np.sqrt(((holdout['y'].values - insamp)**2).mean()))
+            print(f"RMSE on holdout for {tech}: {rmse:.3f}")
+        except Exception:
+            rmse = None
+
+    # Current value (most recent actual)
+    current_value = float(tdf['y'].dropna().iloc[-1])
+
+    # Forecast value to compare: choose first predicted day
+    forecast_value = float(fc[0])
+
+    # Growth percent
+    growth_pct = ((forecast_value - current_value) / current_value) * 100 if current_value != 0 else np.nan
+
+    # Trend direction
+    trend_dir = "Up" if forecast_value > current_value else "Down" if forecast_value < current_value else "Stable"
+
+    # Volatility (last 7 days rolling std from actuals)
+    vol = float(tdf['y'].rolling(7).std().dropna().iloc[-1]) if len(tdf['y'])>=7 else float(tdf['y'].std())
+
+    final_rows.append({
+        'Technology': tech,
+        'Current_Value': current_value,
+        'Forecast_Value': forecast_value,
+        'Growth_Percent': round(growth_pct,3),
+        'Trend_Direction': trend_dir,
+        'Volatility': round(vol,3),
+        'RMSE_on_holdout': round(rmse,3) if rmse is not None else None
+    })
+
+# Build final dataframe and rank by Growth%
+final_df = pd.DataFrame(final_rows)
+final_df['Rank'] = final_df['Growth_Percent'].rank(ascending=False, method='min').astype(int)
+final_df = final_df.sort_values('Rank')
+
+out_path = OUTPUT_DIR / 'final_forecast_table_all.csv'
+final_df.to_csv(out_path, index=False)
+print(f"\n✅ Final forecast table saved: {out_path}")
+print(final_df.to_string(index=False))
